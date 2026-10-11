@@ -35,6 +35,10 @@ Estrutura:
     EmpacotadorKMZ-> empacota o KML e a pasta de recursos (estilo, ícones) em um KMZ
     IndiceKML     -> gera o index.kml com um NetworkLink por KMZ
 
+Nome do álbum: caminho da pasta relativo à raiz (a pasta 'photosync' ou --raiz), unido
+por ' - ' (ex.: <raiz>/Samsung SM-G935F/Camera -> 'Samsung SM-G935F - Camera.kmz'),
+para que pastas de mesmo nome em lugares diferentes não se sobrescrevam.
+
 Pastas sem fotos (ou sem nenhuma foto utilizável) não geram KML/KMZ e não alteram o
 índice. Para recriar só o índice: cam2kml.py --so-indice
 
@@ -95,6 +99,12 @@ RAIZ_PADRAO_NOME = "photosync"
 
 # Formatos do nome (rótulo) de cada placemark
 FORMATOS_NOME = ("arquivo", "data", "ambos")
+
+# O Pillow avisa (DecompressionBombWarning) acima de ~89 milhões de pixels e dá erro
+# acima do dobro disso, o que pega panoramas de telefones antigos. Aqui só se lê o
+# tamanho no cabeçalho (img.size); os pixels nunca são decodificados, então o limite
+# anti "bomba de descompressão" não se aplica e é desativado.
+Image.MAX_IMAGE_PIXELS = None
 
 Coordenadas = tuple[float, float]  # (lon, lat)
 
@@ -409,6 +419,23 @@ class GeradorKML:
     """Varre um diretório e gera um KML com um placemark por foto."""
 
     POLITICAS_SEM_GPS = ("anterior", "padrao", "pular")
+    SEPARADOR_NOME = " - "
+
+    @classmethod
+    def nome_album(cls, diretorio: Path, raiz: Optional[Path]) -> str:
+        """Nome único do álbum: o caminho relativo à raiz, unido por ' - '.
+
+        Ex.: <raiz>/Samsung SM-G935F/Camera -> 'Samsung SM-G935F - Camera', e
+        <raiz>/sample01 -> 'sample01'. Se o diretório for a própria raiz ou não
+        estiver sob ela, usa só o nome da pasta.
+        """
+        partes: tuple[str, ...] = ()
+        if raiz is not None:
+            try:
+                partes = diretorio.resolve().relative_to(raiz.resolve()).parts
+            except ValueError:
+                pass
+        return cls.SEPARADOR_NOME.join(partes) or diretorio.name
 
     def __init__(
         self,
@@ -457,7 +484,7 @@ class GeradorKML:
         self._estilo_kml = self._criar_estilo_kml()
 
         stats = Estatisticas()
-        kml = simplekml.Kml(name=diretorio.name)
+        kml = simplekml.Kml(name=self.nome_album(diretorio, self.raiz))
 
         for arquivo in self._listar_arquivos(diretorio, ignorados):
             stats.total += 1
@@ -750,7 +777,9 @@ def interpretar_argumentos(argv: Optional[list[str]] = None) -> argparse.Namespa
         "-o",
         "--saida",
         help="arquivo de saída, .kml ou .kmz (padrão: <pasta_saida>/<álbum>.kmz se "
-        "'pasta_saida' estiver no config.ini; senão <diretorio>/<álbum>.kml)",
+        "'pasta_saida' estiver no config.ini; senão <diretorio>/<pasta>.kml). "
+        "<álbum> é o caminho relativo à raiz unido por ' - ' "
+        "(ex.: 'Samsung SM-G935F - Camera')",
     )
     parser.add_argument(
         "-r",
@@ -817,7 +846,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[ERRO] '{diretorio}' não é um diretório.", file=sys.stderr)
         return 1
 
-    raiz = Path(args.raiz).resolve() if args.raiz else None
+    raiz = (
+        Path(args.raiz).resolve()
+        if args.raiz
+        else GeradorKML.detectar_raiz(diretorio)
+    )
+    # Caminho relativo à raiz: evita que pastas de mesmo nome (".../Camera") colidam
+    album = GeradorKML.nome_album(diretorio, raiz)
 
     # Destino: -o tem prioridade; depois a pasta_saida do config.ini
     # (<pasta_saida>/<álbum>.kmz); por fim, a própria pasta do álbum (.kml)
@@ -825,7 +860,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.saida:
         saida = Path(args.saida).expanduser()
     elif config.dir_saida is not None:
-        saida = config.dir_saida / f"{diretorio.name}.kmz"
+        saida = config.dir_saida / f"{album}.kmz"
     else:
         saida = diretorio / f"{diretorio.name}.kml"
     saida = saida.resolve()
@@ -849,7 +884,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if stats.fotos == 0:
         print(
-            f"[INFO] '{diretorio.name}': nenhuma foto no KML ({stats.total} arquivos, "
+            f"[INFO] '{album}': nenhuma foto no KML ({stats.total} arquivos, "
             f"{stats.sem_gps} sem GPS, {stats.erros} erros); "
             f"nada foi criado e o índice não foi alterado."
         )
