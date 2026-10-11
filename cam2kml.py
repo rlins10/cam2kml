@@ -35,6 +35,9 @@ Estrutura:
     EmpacotadorKMZ-> empacota o KML e a pasta de recursos (estilo, ícones) em um KMZ
     IndiceKML     -> gera o index.kml com um NetworkLink por KMZ
 
+Pastas sem fotos (ou sem nenhuma foto utilizável) não geram KML/KMZ e não alteram o
+índice. Para recriar só o índice: cam2kml.py --so-indice
+
 Configuração (~/.config/cam2kml/config.ini, seção [geral]):
     metodo_protocolo  http | https | file
     servidor_host     host[:porta] (http/https) ou pasta local das fotos (file://)
@@ -395,10 +398,11 @@ class Estatisticas:
     puladas: int = 0
     erros: int = 0
     links_kml: int = 0
+    fotos: int = 0  # fotos que realmente viraram placemark
 
     @property
     def placemarks(self) -> int:
-        return self.com_gps + self.sem_gps - self.puladas + self.links_kml
+        return self.fotos + self.links_kml
 
 
 class GeradorKML:
@@ -435,6 +439,12 @@ class GeradorKML:
     def gerar(
         self, diretorio: Path, saida: Path, ignorar: Iterable[Path] = ()
     ) -> Estatisticas:
+        """Varre o diretório e grava o KML em 'saida'.
+
+        Se não houver nenhuma foto no KML (pasta sem imagens, só com trilhas, imagens
+        ilegíveis ou todas sem GPS com --sem-gps pular), nada é gravado: o chamador
+        deve conferir 'stats.fotos'.
+        """
         diretorio = diretorio.resolve()
         saida = saida.resolve()
         ignorados = {saida, *(Path(p).resolve() for p in ignorar)}
@@ -462,7 +472,11 @@ class GeradorKML:
                 stats.erros += 1
                 print(f"[AVISO] Ignorando '{arquivo.name}': {e}", file=sys.stderr)
 
+        if stats.fotos == 0:
+            return stats
+
         kml.document.description = self._descricao_documento(diretorio, stats)
+        saida.parent.mkdir(parents=True, exist_ok=True)
         kml.save(str(saida))
         return stats
 
@@ -498,6 +512,7 @@ class GeradorKML:
             stats.puladas += 1
             return
         self._adicionar_foto(kml, dados, coord)
+        stats.fotos += 1
 
     def _resolver_coordenadas(
         self, dados: DadosFoto, stats: Estatisticas
@@ -639,6 +654,7 @@ class IndiceKML:
     def __init__(self, pasta: Path, titulo: str = "Álbuns"):
         self.pasta = pasta
         self.titulo = titulo
+        self.total = 0  # quantidade de álbuns (KMZ) listados na última geração
 
     def gerar(self) -> Path:
         """(Re)gera o índice a partir dos KMZ existentes; pode rodar quantas vezes quiser."""
@@ -650,6 +666,7 @@ class IndiceKML:
             ),
             key=lambda p: p.name.lower(),
         )
+        self.total = len(kmzs)
         agora = datetime.now().strftime("%d/%m/%Y, %H:%M:%S")
         descricao = (
             f"Atualizado em: {agora} (cam2kml {__version__})\nÁlbuns: {len(kmzs)}"
@@ -689,11 +706,16 @@ class IndiceKML:
 def gerar_kmz(
     gerador: GeradorKML, config: Configuracao, diretorio: Path, saida: Path
 ) -> Estatisticas:
-    """Gera o KML numa pasta temporária e o empacota, com a pasta de recursos, em KMZ."""
+    """Gera o KML numa pasta temporária e o empacota, com a pasta de recursos, em KMZ.
+
+    Se a pasta não tiver fotos, não cria o KMZ (e deixa um KMZ antigo como está).
+    """
+    recursos = config.dir_recursos
     with tempfile.TemporaryDirectory(prefix="cam2kml_") as tmp:
         kml_temporario = Path(tmp) / "doc.kml"
         stats = gerador.gerar(diretorio, kml_temporario, ignorar=(saida,))
-        recursos = config.dir_recursos
+        if stats.fotos == 0:
+            return stats
         incluidos = EmpacotadorKMZ(recursos).empacotar(kml_temporario, saida)
 
     if incluidos == 0:
@@ -755,18 +777,46 @@ def interpretar_argumentos(argv: Optional[list[str]] = None) -> argparse.Namespa
         action="store_true",
         help="não atualiza o index.kml da pasta_saida após gerar o KMZ",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--so-indice",
+        action="store_true",
+        help="apenas recria o index.kml da pasta_saida a partir dos KMZ que já existem "
+        "lá, sem processar nenhuma foto (o diretório é ignorado)",
+    )
+    args = parser.parse_args(argv)
+    if args.so_indice and args.sem_indice:
+        parser.error("--so-indice e --sem-indice não podem ser usados juntos")
+    return args
+
+
+def recriar_indice(config: Configuracao) -> int:
+    """Recria o index.kml da pasta_saida a partir dos KMZ existentes."""
+    pasta = config.dir_saida
+    if pasta is None:
+        print("[ERRO] 'pasta_saida' não está definida no config.ini.", file=sys.stderr)
+        return 1
+    if not pasta.is_dir():
+        print(f"[ERRO] A pasta_saida '{pasta}' não existe.", file=sys.stderr)
+        return 1
+
+    indice = IndiceKML(pasta)
+    destino = indice.gerar()
+    print(f"[INFO] Índice recriado: '{destino}' ({indice.total} álbuns)")
+    return 0
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = interpretar_argumentos(argv)
+    config = Configuracao.carregar()
+
+    if args.so_indice:
+        return recriar_indice(config)
 
     diretorio = Path(args.diretorio).resolve()
     if not diretorio.is_dir():
         print(f"[ERRO] '{diretorio}' não é um diretório.", file=sys.stderr)
         return 1
 
-    config = Configuracao.carregar()
     raiz = Path(args.raiz).resolve() if args.raiz else None
 
     # Destino: -o tem prioridade; depois a pasta_saida do config.ini
@@ -779,7 +829,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         saida = diretorio / f"{diretorio.name}.kml"
     saida = saida.resolve()
-    saida.parent.mkdir(parents=True, exist_ok=True)
 
     gerador = GeradorKML(
         config,
@@ -797,6 +846,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ValueError as erro:  # configuração inválida (ex.: pasta_recursos suspeita)
         print(f"[ERRO] {erro}", file=sys.stderr)
         return 1
+
+    if stats.fotos == 0:
+        print(
+            f"[INFO] '{diretorio.name}': nenhuma foto no KML ({stats.total} arquivos, "
+            f"{stats.sem_gps} sem GPS, {stats.erros} erros); "
+            f"nada foi criado e o índice não foi alterado."
+        )
+        return 0
 
     if eh_kmz and usa_pasta_saida and not args.sem_indice:
         indice = IndiceKML(saida.parent).gerar()
