@@ -1,0 +1,42 @@
+[build-system]
+# setuptools >= 77 is needed for the SPDX "license" expression below
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cam2kml"
+dynamic = ["version"]  # read from __version__ in cam2kml.py
+description = "Create Google Earth KMZ files (with an album index) from geotagged photos"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Renato Lins", email = "renatolins.am@gmail.com" }]
+keywords = ["kml", "kmz", "google-earth", "exif", "gps", "geotag", "photos"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+dependencies = [
+    "ExifRead>=3.0",
+    "simplekml>=1.3",
+    "Pillow>=9.0",
+]
+
+# Replace YOUR-USER with your GitHub user name, then uncomment:
+# [project.urls]
+# Homepage = "https://github.com/YOUR-USER/cam2kml"
+# Issues = "https://github.com/YOUR-USER/cam2kml/issues"
+
+[project.scripts]
+cam2kml = "cam2kml:main"
+
+[tool.setuptools]
+py-modules = ["cam2kml"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cam2kml.__version__" }
